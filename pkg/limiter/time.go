@@ -1,7 +1,7 @@
 package limiter
 
 import (
-	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v2"
+	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
 )
 
 func timeUnitToWindowSize(unit string) int64 {

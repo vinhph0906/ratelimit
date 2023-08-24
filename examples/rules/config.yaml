@@ -1,27 +1,163 @@
 domains:
-  - domain: envoy
+  - domain: vinhph2.vngcloud.vn
     rules:
-      - name: authenticated users
-        labels:
-          - key: authenticated
-            value: "true"
-          - key: user_id
-        limit:
-          unit: hour
-          requests: 500
-
-      - name: any user
-        labels:
-          - key: user_id
-        limit:
-          unit: hour
-          requests: 1000
-
-      - name: portuguese users
-        labels:
-          - key: country
-            value: "PT"
-          - key: user_id
+      - name: global
+        entries:
+          - key: service
+            value: "vinhph2"
         limit:
           unit: minute
-          requests: 4000
+          requests: 10
+        syncRate: 10
+      - name: any client ip
+        entries:
+          - key: method
+          - key: remote_address
+        limit:
+          unit: minute
+          requests: 500
+      - name: any user
+        entries:
+          - key: method
+          - key: auth-account-id
+        limit:
+          unit: minute
+          requests: 1
+      - name: user 11285
+        entries:
+          - key: method
+          - key: auth-account-id
+            value: "11285"
+        limit:
+          unit: minute
+          requests: 50
+      - name: user 11285
+        entries:
+          - key: method
+            value: "GET"
+          - key: auth-account-id
+            value: "11285"
+        limit:
+          unit: minute
+          requests: 5
+
+      # - name: user 11286
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11286"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11287
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11287"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11288
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11288"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11289
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11289"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11290
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11290"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11291
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11291"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11292
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11292"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11293
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11293"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11294
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11294"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11295
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11295"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11296
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11296"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11297
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11297"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11298
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11298"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11299
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11299"
+      #   limit:
+      #     unit: minute
+      #     requests: 50
+      # - name: user 11300
+      #   entries:
+      #     - key: method
+      #     - key: auth-account-id
+      #       value: "11300"
+      #   limit:
+      #     unit: minute
+      #     requests: 50

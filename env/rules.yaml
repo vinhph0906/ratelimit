@@ -3,12 +3,12 @@ domains:
     rules:
       - labels:
           - key: tenant_id
-        syncRate: -1
+        syncRate: 0
         limit:
           unit: minute
-          requests: 100000000
+          requests: 1000
       - labels:
           - key: ip_address
         limit:
           unit: day
-          requests: 576876
+          requests: 57687

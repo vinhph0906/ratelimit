@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	rl "github.com/envoyproxy/go-control-plane/envoy/api/v2/ratelimit"
+	rl "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
 	"github.com/fsnotify/fsnotify"
 	"github.com/pkg/errors"
 	"github.com/samueltorres/r8limiter/pkg/limiter"
@@ -17,7 +17,7 @@ type RulesService struct {
 	mux         *sync.RWMutex
 	viper       *viper.Viper
 	rulesConfig *limiter.RulesConfig
-	rulesIndex  map[string][]*limiter.Rule
+	rulesIndex  map[string]*limiter.Rule
 	ruleCount   int
 }
 
@@ -56,105 +56,142 @@ func NewRuleService(file string) (*RulesService, error) {
 
 	return fc, nil
 }
-
+func generateKeyRule(ruleKeys *[]string, keyPre string, n int, rateLimitDescriptor *rl.RateLimitDescriptor) {
+	if n == len(rateLimitDescriptor.Entries)-1 {
+		*ruleKeys = append(*ruleKeys, keyPre+rateLimitDescriptor.Entries[n].Key)
+		*ruleKeys = append(*ruleKeys, keyPre+rateLimitDescriptor.Entries[n].Key+"="+rateLimitDescriptor.Entries[n].Value)
+		return
+	}
+	generateKeyRule(ruleKeys, keyPre+rateLimitDescriptor.Entries[n].Key+"&", n+1, rateLimitDescriptor)
+	generateKeyRule(ruleKeys, keyPre+rateLimitDescriptor.Entries[n].Key+"="+rateLimitDescriptor.Entries[n].Value+"&", n+1, rateLimitDescriptor)
+}
 func (rs *RulesService) GetRatelimitRule(domain string, rateLimitDescriptor *rl.RateLimitDescriptor) (*limiter.Rule, error) {
 	rs.mux.RLock()
 	defer rs.mux.RUnlock()
-
-	ruleMatchCount := make(map[*limiter.Rule]int, rs.ruleCount)
-
-	// 1. find possible matches
-	for _, entry := range rateLimitDescriptor.Entries {
-		// 1.1 descriptors that contain a key
-		key := domain + "." + entry.Key
-		if descriptors, ok := rs.rulesIndex[key]; ok {
-			for _, desc := range descriptors {
-				ruleMatchCount[desc]++
-			}
-		}
-
-		// 1.2 descriptors that contain a key & value
-		key = domain + "." + entry.Key + "." + entry.Value
-		if descriptors, ok := rs.rulesIndex[key]; ok {
-			for _, desc := range descriptors {
-				ruleMatchCount[desc]++
-			}
-		}
-	}
-
-	if len(ruleMatchCount) == 0 {
-		return nil, limiter.ErrNoMatchedRule
-	}
-
-	// 2. filter out matches
-	type rankedMatch struct {
-		rule  *limiter.Rule
-		count int
-	}
-
+	ruleKeys := []string{}
+	generateKeyRule(&ruleKeys, domain+"?", 0, rateLimitDescriptor)
+	// fmt.Println(ruleKeys)
+	// fmt.Println(rs.rulesIndex)
 	// todo: #performance rankedMatches is escaping to the heap, please review later
-	rankedMatches := make([]rankedMatch, 0, len(ruleMatchCount))
-	requestDescriptorLabels := make(map[string]bool)
-	for _, label := range rateLimitDescriptor.Entries {
-		requestDescriptorLabels[label.Key] = true
-		requestDescriptorLabels[label.Key+"."+label.Value] = true
-	}
-
-	for rule, count := range ruleMatchCount {
-		// todo: add support for regex on rules here
-		// filter out non existing labels
-		if len(rateLimitDescriptor.Entries) >= len(rule.Labels) {
-			descriptorEntriesValid := true
-			for _, label := range rule.Labels {
-				// if there's a label key not present
-				if _, exists := requestDescriptorLabels[label.Key]; !exists {
-					descriptorEntriesValid = false
-					break
-				}
-
-				// if label value is specified, it must match descriptor's
-				if label.Value != "" {
-					if _, exists := requestDescriptorLabels[label.Key+"."+label.Value]; !exists {
-						descriptorEntriesValid = false
-						break
-					}
-				}
-			}
-
-			if descriptorEntriesValid {
-				rankedMatches = append(rankedMatches, rankedMatch{rule, count})
-			}
+	rankedMatches := make([]*limiter.Rule, 0)
+	for _, key := range ruleKeys {
+		if rule, ok := rs.rulesIndex[key]; ok {
+			// fmt.Println(*rule)
+			rankedMatches = append(rankedMatches, rule)
 		}
 	}
-
+	// fmt.Println(rankedMatches)
 	if len(rankedMatches) == 0 {
 		return nil, limiter.ErrNoMatchedRule
 	}
-
 	// 2.1 sort matches by count descending
 	sort.Slice(rankedMatches, func(i, j int) bool {
-		return rankedMatches[i].count > rankedMatches[j].count
+		// return rankedMatches[i].count > rankedMatches[j].count
+		return (rankedMatches[i].InnerRank > rankedMatches[j].InnerRank)
 	})
-
-	// 2.2 return descriptor with matches
-	selectedDescriptor := rankedMatches[0]
-	maxInnerRank := rankedMatches[0].rule.InnerRank
-
-	// 2.3 check for ties in matches
-	for j := 1; j < len(rankedMatches); j++ {
-		// if there's a tie we need to find the one with the biggest rank
-		if selectedDescriptor.count == rankedMatches[j].count {
-			if rankedMatches[j].rule.InnerRank > maxInnerRank {
-				selectedDescriptor = rankedMatches[j]
-				maxInnerRank = rankedMatches[j].rule.InnerRank
-			}
-		} else {
-			return selectedDescriptor.rule, nil
-		}
-	}
-
-	return selectedDescriptor.rule, nil
+	return rankedMatches[0], nil
 }
+
+// func (rs *RulesService) GetRatelimitRule(domain string, rateLimitDescriptor *rl.RateLimitDescriptor) (*limiter.Rule, error) {
+// 	rs.mux.RLock()
+// 	defer rs.mux.RUnlock()
+
+// 	ruleMatchCount := make(map[*limiter.Rule]int, rs.ruleCount)
+
+// 	// 1. find possible matches
+// 	for _, entry := range rateLimitDescriptor.Entries {
+// 		// 1.1 descriptors that contain a key
+// 		key := domain + "." + entry.Key
+// 		if descriptors, ok := rs.rulesIndex[key]; ok {
+// 			for _, desc := range descriptors {
+// 				ruleMatchCount[desc]++
+// 			}
+// 		}
+
+// 		// 1.2 descriptors that contain a key & value
+// 		key = domain + "." + entry.Key + "." + entry.Value
+// 		if descriptors, ok := rs.rulesIndex[key]; ok {
+// 			for _, desc := range descriptors {
+// 				ruleMatchCount[desc]++
+// 			}
+// 		}
+// 	}
+
+// 	if len(ruleMatchCount) == 0 {
+// 		return nil, limiter.ErrNoMatchedRule
+// 	}
+// 	// data, _ := json.Marshal(ruleMatchCount)
+// 	fmt.Println(ruleMatchCount)
+// 	// 2. filter out matches
+// 	type rankedMatch struct {
+// 		rule  *limiter.Rule
+// 		count int
+// 	}
+
+// 	// todo: #performance rankedMatches is escaping to the heap, please review later
+// 	rankedMatches := make([]rankedMatch, 0, len(ruleMatchCount))
+// 	requestDescriptorLabels := make(map[string]bool)
+// 	for _, label := range rateLimitDescriptor.Entries {
+// 		requestDescriptorLabels[label.Key] = true
+// 		requestDescriptorLabels[label.Key+"."+label.Value] = true
+// 	}
+
+// 	for rule, count := range ruleMatchCount {
+// 		// todo: add support for regex on rules here
+// 		// filter out non existing labels
+// 		if len(rateLimitDescriptor.Entries) >= len(rule.Labels) {
+// 			descriptorEntriesValid := true
+// 			for _, label := range rule.Labels {
+// 				// if label value is specified, it must match descriptor's
+// 				if label.Value != "" {
+// 					if _, exists := requestDescriptorLabels[label.Key+"."+label.Value]; !exists {
+// 						descriptorEntriesValid = false
+// 						break
+// 					}
+// 				}
+// 				// if there's a label key not present
+// 				if _, exists := requestDescriptorLabels[label.Key]; !exists {
+// 					descriptorEntriesValid = false
+// 					break
+// 				}
+// 			}
+
+// 			if descriptorEntriesValid {
+// 				rankedMatches = append(rankedMatches, rankedMatch{rule, count})
+// 			}
+// 		}
+// 	}
+
+// 	if len(rankedMatches) == 0 {
+// 		return nil, limiter.ErrNoMatchedRule
+// 	}
+
+// 	// 2.1 sort matches by count descending
+// 	sort.Slice(rankedMatches, func(i, j int) bool {
+// 		// return rankedMatches[i].count > rankedMatches[j].count
+// 		return (rankedMatches[i].count > rankedMatches[j].count) || ((rankedMatches[i].count == rankedMatches[j].count) && (rankedMatches[i].rule.InnerRank > rankedMatches[j].rule.InnerRank))
+// 	})
+
+// 	return rankedMatches[0].rule, nil
+// 	// // 2.2 return descriptor with matches
+// 	// selectedDescriptor := rankedMatches[0]
+// 	// maxInnerRank := rankedMatches[0].rule.InnerRank
+
+// 	// // 2.3 check for ties in matches
+// 	// for j := 1; j < len(rankedMatches); j++ {
+// 	// 	// if there's a tie we need to find the one with the biggest rank
+// 	// 	if selectedDescriptor.count == rankedMatches[j].count {
+// 	// 		if rankedMatches[j].rule.InnerRank > maxInnerRank {
+// 	// 			selectedDescriptor = rankedMatches[j]
+// 	// 			maxInnerRank = rankedMatches[j].rule.InnerRank
+// 	// 		}
+// 	// 	} else {
+// 	// 		return selectedDescriptor.rule, nil
+// 	// 	}
+// 	// }
+
+// 	// return selectedDescriptor.rule, nil
+// }
 
 func (rs *RulesService) loadRules() error {
 	var rulesConfig limiter.RulesConfig
@@ -169,41 +206,71 @@ func (rs *RulesService) loadRules() error {
 	}
 
 	rs.mux.Lock()
-	rs.mux.Unlock()
+
 	rs.rulesConfig = &rulesConfig
 	rs.rulesIndex, rs.ruleCount = createSearchIndex(&rulesConfig)
-
+	rs.mux.Unlock()
 	return nil
 }
 
-func createSearchIndex(rc *limiter.RulesConfig) (map[string][]*limiter.Rule, int) {
-	ruleMap := make(map[string][]*limiter.Rule)
+func createSearchIndex(rc *limiter.RulesConfig) (map[string]*limiter.Rule, int) {
+	ruleMap := make(map[string]*limiter.Rule)
 	ruleCount := 0
 	for _, domain := range rc.Domains {
 		for _, rule := range domain.Rules {
 			ruleCount++
-
-			for _, k := range rule.Labels {
-				var key string
+			key := domain.Domain + "?"
+			for i, k := range rule.Entries {
 				if k.Value == "" {
-					key = domain.Domain + "." + k.Key
-					rule.InnerRank = 10
+					key = key + k.Key
+					rule.InnerRank += 10
 				} else {
-					key = domain.Domain + "." + k.Key + "." + k.Value
-					rule.InnerRank = 1000
+					key = key + k.Key + "=" + k.Value
+					rule.InnerRank += 1000
 				}
-
-				_, exist := ruleMap[key]
-				if !exist {
-					ruleMap[key] = []*limiter.Rule{}
+				if i != len(rule.Entries)-1 {
+					key = key + "&"
 				}
-				ruleMap[key] = append(ruleMap[key], rule)
 			}
+			_, exist := ruleMap[key]
+			if exist {
+				continue
+			}
+			ruleMap[key] = rule
 		}
 	}
 
 	return ruleMap, ruleCount
 }
+
+// func createSearchIndex(rc *limiter.RulesConfig) (map[string][]*limiter.Rule, int) {
+// 	ruleMap := make(map[string][]*limiter.Rule)
+// 	ruleCount := 0
+// 	for _, domain := range rc.Domains {
+// 		for _, rule := range domain.Rules {
+// 			ruleCount++
+
+// 			for _, k := range rule.Labels {
+// 				var key string
+// 				if k.Value == "" {
+// 					key = domain.Domain + "." + k.Key
+// 					rule.InnerRank = 10
+// 				} else {
+// 					key = domain.Domain + "." + k.Key + "." + k.Value
+// 					rule.InnerRank = 1000
+// 				}
+
+// 				_, exist := ruleMap[key]
+// 				if !exist {
+// 					ruleMap[key] = []*limiter.Rule{}
+// 				}
+// 				ruleMap[key] = append(ruleMap[key], rule)
+// 			}
+// 		}
+// 	}
+
+// 	return ruleMap, ruleCount
+// }
 
 func validateRules(rulesConfig limiter.RulesConfig) error {
 
@@ -236,8 +303,8 @@ func validateRules(rulesConfig limiter.RulesConfig) error {
 		for j, r := range d.Rules {
 
 			// validate that there are no rules with the same labels
-			labelKeyValues := make([]string, 0, len(r.Labels))
-			for _, label := range r.Labels {
+			labelKeyValues := make([]string, 0, len(r.Entries))
+			for _, label := range r.Entries {
 				labelKeyValues = append(labelKeyValues, label.Key+"."+label.Value)
 			}
 			sort.Strings(labelKeyValues)

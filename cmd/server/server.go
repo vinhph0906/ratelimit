@@ -157,7 +157,6 @@ func createCounterStorage(config configs.Config, logger *logrus.Logger, metrics 
 		Password: config.Redis.Password,
 		DB:       config.Redis.Database,
 	})
-
 	_, err := redisClient.Ping().Result()
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to redis : %w", err)

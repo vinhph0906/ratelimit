@@ -5,8 +5,8 @@ import (
 	"io/ioutil"
 	"testing"
 
-	rl "github.com/envoyproxy/go-control-plane/envoy/api/v2/ratelimit"
-	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v2"
+	rl "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
+	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/mock"

@@ -7,8 +7,10 @@ import (
 	"strings"
 	"time"
 
-	rl "github.com/envoyproxy/go-control-plane/envoy/api/v2/ratelimit"
-	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v2"
+	rl "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
+	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
+	"github.com/golang/protobuf/ptypes/duration"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 )
@@ -65,7 +67,11 @@ func NewLimiterService(
 }
 
 func (l *LimiterService) ShouldRateLimit(ctx context.Context, req *pb.RateLimitRequest) (response *pb.RateLimitResponse, err error) {
+	// data, _ := json.Marshal(req)
+	// fmt.Println(string(data))
 	defer func() {
+		// data, _ = json.Marshal(response)
+		// fmt.Println(string(data))
 		if err != nil {
 			return
 		}
@@ -81,99 +87,121 @@ func (l *LimiterService) ShouldRateLimit(ctx context.Context, req *pb.RateLimitR
 	}()
 
 	response = &pb.RateLimitResponse{
-		Statuses: make([]*pb.RateLimitResponse_DescriptorStatus, len(req.Descriptors)),
+		OverallCode: pb.RateLimitResponse_UNKNOWN,
+	}
+	// service does not allow 0 hits addend
+	if req.HitsAddend == 0 {
+		req.HitsAddend = 1
 	}
 
-	for i, desc := range req.Descriptors {
-		response.Statuses[i] = &pb.RateLimitResponse_DescriptorStatus{
-			CurrentLimit: &pb.RateLimitResponse_RateLimit{},
-		}
-
+	rules := []*Rule{}
+	keys := []string{}
+	isOverLimit := false
+	statuses := []*pb.RateLimitResponse_DescriptorStatus{}
+	now := time.Now().Unix()
+	for _, desc := range req.Descriptors {
 		rule, err := l.rulesService.GetRatelimitRule(req.Domain, desc)
 		if err != nil {
 			if err == ErrNoMatchedRule {
 				continue
 			}
 		}
-
+		rules = append(rules, rule)
 		windowSize := timeUnitToWindowSize(rule.Limit.Unit)
-		now := time.Now().Unix()
-
-		// service does not allow 0 hits addend
-		if req.HitsAddend == 0 {
-			req.HitsAddend = 1
+		key := generateKey(req.Domain, desc, rule, now/windowSize)
+		keys = append(keys, key)
+		status := &pb.RateLimitResponse_DescriptorStatus{
+			CurrentLimit: &pb.RateLimitResponse_RateLimit{
+				RequestsPerUnit: rule.Limit.Requests,
+				Unit:            timeUnitToPb(rule.Limit.Unit),
+			},
+			DurationUntilReset: &duration.Duration{
+				Seconds: windowSize - (now % windowSize),
+			},
+			Code:           pb.RateLimitResponse_UNKNOWN,
+			LimitRemaining: rule.Limit.Requests,
 		}
-
-		// get current bucket usage
+		currUsage, err := l.counterService.Get(ctx, key)
+		if err != nil {
+			if rule.SyncRate == 0 {
+				currUsage, err = l.counterService.GetFromStorage(ctx, key)
+				if err != nil {
+					statuses = append(statuses, status)
+					continue
+				}
+			}
+		}
+		if currUsage > rule.Limit.Requests {
+			status.Code = pb.RateLimitResponse_OVER_LIMIT
+			status.LimitRemaining = 0
+			isOverLimit = true
+			if rule.SyncRate == 0 {
+				l.counterService.Increment(ctx, key, currUsage, now+(timeUnitToWindowSize(rule.Limit.Unit)*2), -1)
+			}
+		} else {
+			status.LimitRemaining = rule.Limit.Requests - currUsage
+		}
+		statuses = append(statuses, status)
+	}
+	if isOverLimit {
+		response.OverallCode = pb.RateLimitResponse_OVER_LIMIT
+		response.Statuses = statuses
+		return response, nil
+	}
+	for i, rule := range rules {
 		var currUsage uint32
-		{
-			key := generateKey(desc, rule, now/windowSize)
+		//check if its already over-limit on local storage
+		key := keys[i]
 
-			// current usage must be available 2 buckets later for interpolation
-			ttl := now + (windowSize * 2)
-
-			if rule.SyncRate == 0 {
-				currUsage, err = l.counterService.IncrementOnStorage(ctx, key, req.HitsAddend, ttl)
-				if err != nil {
-					return nil, err
-				}
-			} else {
-				currUsage, err = l.counterService.Increment(ctx, key, req.HitsAddend, ttl, rule.SyncRate)
-				if err != nil {
-					return nil, err
-				}
+		// current usage must be available 2 buckets later for interpolation
+		ttl := now + (timeUnitToWindowSize(rule.Limit.Unit) * 2)
+		if rule.SyncRate == 0 {
+			currUsage, err = l.counterService.IncrementOnStorage(ctx, key, req.HitsAddend, ttl)
+			if err != nil {
+				continue
+			}
+		} else {
+			currUsage, err = l.counterService.Increment(ctx, key, req.HitsAddend, ttl, rule.SyncRate)
+			if err != nil {
+				continue
 			}
 		}
 
-		// get previous bucket usage
-		var previousUsage uint32
-		{
-			key := generateKey(desc, rule, (now/windowSize)-1)
-			if rule.SyncRate == 0 {
-				previousUsage, _ = l.counterService.GetFromStorage(ctx, key)
-			} else {
-				previousUsage, _ = l.counterService.Get(ctx, key)
-			}
-		}
-
-		// calculate rate
-		weight := float64(windowSize-(now%windowSize)) / float64(windowSize)
-		rate := currUsage + uint32(float64(previousUsage)*weight)
-
-		response.Statuses[i].CurrentLimit.RequestsPerUnit = rule.Limit.Requests
-		response.Statuses[i].CurrentLimit.Unit = timeUnitToPb(rule.Limit.Unit)
-
+		rate := currUsage
 		if rate > rule.Limit.Requests {
 			response.OverallCode = pb.RateLimitResponse_OVER_LIMIT
-			response.Statuses[i].Code = pb.RateLimitResponse_OVER_LIMIT
-			response.Statuses[i].LimitRemaining = 0
+			statuses[i].Code = pb.RateLimitResponse_OVER_LIMIT
+			statuses[i].LimitRemaining = 0
+			// if its already over-limit, we set it to local storage
+			if rule.SyncRate == 0 {
+				l.counterService.Increment(ctx, key, rate, ttl, -1)
+			}
 		} else {
-			// if its already over-limit, we shouldnt tag it as ok
-			if response.OverallCode != pb.RateLimitResponse_OVER_LIMIT {
+			// // if its already over-limit, we shouldnt tag it as ok
+			if response.OverallCode == pb.RateLimitResponse_UNKNOWN {
 				response.OverallCode = pb.RateLimitResponse_OK
 			}
-
-			response.Statuses[i].Code = pb.RateLimitResponse_OK
-			response.Statuses[i].LimitRemaining = rule.Limit.Requests - currUsage
+			statuses[i].Code = pb.RateLimitResponse_OK
+			statuses[i].LimitRemaining = rule.Limit.Requests - currUsage
 		}
 	}
-
+	response.Statuses = statuses
 	return response, nil
 }
 
-func generateKey(desc *rl.RateLimitDescriptor, rule *Rule, timeValue int64) string {
-	usedLimitDescriptorLabels := make(map[string]bool)
-	for _, label := range rule.Labels {
-		usedLimitDescriptorLabels[label.Key] = true
+func generateKey(domain string, desc *rl.RateLimitDescriptor, rule *Rule, timeValue int64) string {
+	usedLimitDescriptorEntries := make(map[string]bool)
+	for _, label := range rule.Entries {
+		usedLimitDescriptorEntries[label.Key] = true
 	}
 
 	descriptorKeyValues := make([]string, 0, len(desc.Entries))
 	for _, entry := range desc.Entries {
-		if _, exists := usedLimitDescriptorLabels[entry.Key]; exists {
-			descriptorKeyValues = append(descriptorKeyValues, entry.Key+"."+entry.Value)
+		if _, exists := usedLimitDescriptorEntries[entry.Key]; exists {
+			descriptorKeyValues = append(descriptorKeyValues, entry.Key+"="+entry.Value)
 		}
 	}
 	sort.Strings(descriptorKeyValues)
 
-	return strings.Join(descriptorKeyValues, "_") + ":" + rule.Limit.Unit + ":" + strconv.FormatInt(timeValue, 10)
+	return domain + ":" + strings.Join(descriptorKeyValues, "&") + ":" + rule.Limit.Unit + ":" + strconv.FormatInt(timeValue, 10)
 }

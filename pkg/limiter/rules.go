@@ -3,7 +3,7 @@ package limiter
 import (
 	"errors"
 
-	rl "github.com/envoyproxy/go-control-plane/envoy/api/v2/ratelimit"
+	rl "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
 )
 
 var ErrNoMatchedRule = errors.New("no matched rules")
@@ -22,14 +22,14 @@ type DomainRules struct {
 }
 
 type Rule struct {
-	Name      string            `yaml:"name"`
-	Labels    []DescriptorLabel `yaml:"labels"`
-	Limit     Limit             `yaml:"limit"`
-	SyncRate  int               `yaml:"syncRate"`
+	Name      string              `yaml:"name"`
+	Entries   []DescriptorEntries `yaml:"entries"`
+	Limit     Limit               `yaml:"limit"`
+	SyncRate  int                 `yaml:"syncRate"`
 	InnerRank int
 }
 
-type DescriptorLabel struct {
+type DescriptorEntries struct {
 	Key   string `yaml:"key"`
 	Value string `yaml:"value"`
 }

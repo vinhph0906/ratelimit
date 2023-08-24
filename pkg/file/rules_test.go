@@ -3,7 +3,7 @@ package file
 import (
 	"testing"
 
-	rl "github.com/envoyproxy/go-control-plane/envoy/api/v2/ratelimit"
+	rl "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
 	"github.com/samueltorres/r8limiter/pkg/limiter"
 	"github.com/stretchr/testify/assert"
 )

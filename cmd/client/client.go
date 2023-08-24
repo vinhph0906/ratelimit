@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"sync"
 
-	rl "github.com/envoyproxy/go-control-plane/envoy/api/v2/ratelimit"
-	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v2"
+	rl "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
+	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
 	"google.golang.org/grpc"
 )
 
@@ -147,7 +147,7 @@ func httpCaller(wg *sync.WaitGroup, client *http.Client, addr string, cancel cha
 // ---------------- Request Builder -----------------
 
 func newRateLimitRequest() *pb.RateLimitRequest {
-	tenant := rand.Intn(10000000)
+	tenant := rand.Intn(1)
 
 	return &pb.RateLimitRequest{
 		Domain:     "kong",

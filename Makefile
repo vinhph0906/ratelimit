@@ -1,3 +1,6 @@
+build:
+	go build --race -o ratelimit cmd/server/server.go
+
 run:
 	go run cmd/server/server.go --rules-file=./env/rules.yaml
 

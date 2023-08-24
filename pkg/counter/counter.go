@@ -98,6 +98,9 @@ func NewCounterService(
 // Increment creates or increments a given value on a counter, it also allows the counter to have a ttl
 // and to have a synchronization rate to a remote storage
 func (cs *CounterService) Increment(ctx context.Context, key string, n uint32, ttl int64, syncRate int) (uint32, error) {
+	if syncRate == 0 {
+		return cs.IncrementOnStorage(ctx, key, n, ttl)
+	}
 	shard := fnv1a.HashString64(key) % cs.shardCount
 	mux := cs.shardedMutexes[shard]
 	mux.Lock()
@@ -111,7 +114,22 @@ func (cs *CounterService) Increment(ctx context.Context, key string, n uint32, t
 			ttl:      ttl,
 			syncRate: syncRate,
 		}
-		return n, nil
+		mux.Unlock()
+		if syncRate != -1 {
+			batch := make([]CounterInc, 0, 1)
+			batch = append(batch, CounterInc{
+				Key: key,
+				Inc: n,
+				TTL: ttl,
+			})
+			cs.syncCounters(batch)
+		}
+		mux.Lock()
+		c, ok = cs.shardedCounters[shard][key]
+		if !ok {
+			return n, nil
+		}
+		return c.stored + c.current, nil
 	}
 
 	newValue := atomic.AddUint32(&c.current, n)
@@ -142,7 +160,9 @@ func (cs *CounterService) Get(ctx context.Context, key string) (uint32, error) {
 	if !ok {
 		return 0, ErrNonExistingCounter
 	}
-
+	if c.ttl < time.Now().Unix() {
+		return 0, ErrExpiredCounter
+	}
 	return atomic.LoadUint32(&c.current) + atomic.LoadUint32(&c.stored), nil
 }
 
@@ -189,11 +209,11 @@ func (cs *CounterService) shardAnalyzer(cancel chan struct{}, initShard int, ana
 
 			for i := initShard; i < int(cs.shardCount); i += analyzerCount {
 
-				countersToDelete := make([]string, 0, len(cs.shardedCounters[i]))
-				countersToUpdate := make([]string, 0, len(cs.shardedCounters[i]))
-
 				mux := cs.shardedMutexes[i]
 				mux.RLock()
+
+				countersToDelete := make([]string, 0, len(cs.shardedCounters[i]))
+				countersToUpdate := make([]string, 0, len(cs.shardedCounters[i]))
 				for k, v := range cs.shardedCounters[i] {
 					// counter does not need to be synchronized as it only lives in memory
 					if v.syncRate == -1 {
@@ -206,7 +226,6 @@ func (cs *CounterService) shardAnalyzer(cancel chan struct{}, initShard int, ana
 						continue
 					}
 
-					// if counter needs to be synchronized
 					if now-atomic.LoadInt64(&v.lastSync) > int64(v.syncRate) {
 						countersToUpdate = append(countersToUpdate, k)
 					}
@@ -281,7 +300,6 @@ func (cs *CounterService) syncCounters(incs []CounterInc) {
 	if len(incs) == 0 {
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 	defer cancel()
 	incvalues, err := cs.storage.BatchIncrement(ctx, incs)
@@ -292,6 +310,10 @@ func (cs *CounterService) syncCounters(incs []CounterInc) {
 	}
 
 	for i, inc := range incvalues {
+		if inc.Err != nil {
+			cs.logger.Error(err)
+			continue
+		}
 		shard := fnv1a.HashString64(inc.Key) % cs.shardCount
 		mux := cs.shardedMutexes[shard]
 		mux.RLock()
@@ -301,13 +323,6 @@ func (cs *CounterService) syncCounters(incs []CounterInc) {
 			mux.RUnlock()
 			continue
 		}
-
-		if inc.Err != nil {
-			cs.logger.Error(err)
-			mux.RUnlock()
-			return
-		}
-
 		// decrement current counter with the value that was
 		// incremented on storage
 		atomic.AddUint32(&counter.current, ^uint32(incs[i].Inc-1))
